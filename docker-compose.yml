@@ -12,13 +12,13 @@ services:
       MYSQL_USER: app_user
       MYSQL_PASSWORD: Hello@123
     ports:
-      - "3307:3306"   # Changed to 3307 to avoid conflict with local MySQL on 3306
+      - "3307:3306" # Changed to 3307 to avoid conflict with local MySQL on 3306
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
       - football-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pHello@123"]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pHello@123" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -41,9 +41,9 @@ services:
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_JPA_SHOW_SQL: "true"
     ports:
-      - "8080:8080"   # Spring Boot (direct access)
-      - "8081:80"     # NGINX reverse proxy → Spring Boot (host 8081 → container 80)
-      - "2222:22"     # SSH access (shifted from 22 to avoid conflict with load balancer)
+      - "8080:8080" # Spring Boot (direct access)
+      - "8081:80" # NGINX reverse proxy → Spring Boot (host 8081 → container 80)
+      - "2222:22" # SSH access (shifted from 22 to avoid conflict with load balancer)
     depends_on:
       mysql-db:
         condition: service_healthy
@@ -67,8 +67,8 @@ services:
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_JPA_SHOW_SQL: "true"
     ports:
-      - "8090:80"     # Web Load Balancer on IP localhost:8090 for website
-      - "22:22"       # Port 22 for SSH
+      - "8092:80" # Web Load Balancer on IP localhost:8090 for website
+      - "22:22" # Port 22 for SSH
     depends_on:
       mysql-db:
         condition: service_healthy
