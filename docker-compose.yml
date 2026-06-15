@@ -75,6 +75,25 @@ services:
     networks:
       - football-network
 
+  # ============================================================
+  # phpMyAdmin Database Management
+  # ============================================================
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    container_name: football-rental-phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql-db
+      PMA_PORT: 3306
+      PMA_ARBITRARY: 1
+    ports:
+      - "8085:80"     # Web interface for remote and local access
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    networks:
+      - football-network
+
 # ============================================================
 # Named volumes
 # ============================================================
