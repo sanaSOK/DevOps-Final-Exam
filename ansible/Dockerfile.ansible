@@ -1,0 +1,10 @@
+# =============================================================
+# Dockerfile.ansible
+# Custom Ansible image with OpenSSH client for connecting
+# to the webserver container (CHOICE_A) via SSH.
+# =============================================================
+FROM cytopia/ansible:latest
+
+# Add OpenSSH client (required by Ansible to connect via SSH)
+# and sshpass (required for password-based SSH auth)
+RUN apk add --no-cache openssh-client sshpass

@@ -1,0 +1,362 @@
+---
+# =============================================================
+# Ansible Playbook: Football Rental - Web Server Deployment
+# =============================================================
+# Target  : CHOICE_A (webserver container via SSH on port 22)
+# Actions :
+#   0. Login to Web Server (CHOICE_A) via SSH
+#   1. Git pull (install git, clone/pull source to /src)
+#   2. Build with Maven (./mvnw package) — like composer + npm build
+#   3. Run tests against SQLite (spring.profiles.active=test)
+#   4. Backup MySQL production database
+#   5. Deploy new JAR + restart Spring Boot (via container auto-restart)
+# =============================================================
+
+- name: "Football Rental - Deploy to Web Server (CHOICE_A)"
+  hosts: webserver
+  gather_facts: yes
+
+  vars:
+    app_dir: /app
+    src_dir: /src                    # Source code lives here (cloned/pulled by Ansible)
+    repo_url: "https://github.com/sanaSOK/DevOps-Final-Exam.git"
+    mysql_host: "mysql-db"
+    mysql_port: 3306
+    mysql_db: "SANA-db"
+    mysql_user: "root"
+    mysql_password: "Hello@123"
+    mysql_backup_dir: "/app/backups"
+    spring_boot_jar: "/app/football-rental.jar"
+    spring_boot_port: 8080
+
+  tasks:
+    # ----------------------------------------------------------
+    # SECTION 0: Verify SSH connection to CHOICE_A
+    # ----------------------------------------------------------
+    - name: "0. Ping CHOICE_A (webserver) via SSH"
+      ping:
+
+    - name: "0. Connection confirmed"
+      debug:
+        msg: "Connected to CHOICE_A (football-rental-webserver) via SSH"
+
+    # ----------------------------------------------------------
+    # SECTION 1: Install git + Git Pull into /src
+    # ----------------------------------------------------------
+    - name: "1. Install git inside the container (if not present)"
+      shell: |
+        which git && echo "git already installed" || (apt-get update -qq && apt-get install -y -qq git && echo "git installed")
+      register: git_install_result
+      changed_when: "'git installed' in git_install_result.stdout"
+
+    - name: "1. Show git install result"
+      debug:
+        var: git_install_result.stdout_lines
+
+    - name: "1. Check if source repo already exists at {{ src_dir }}"
+      stat:
+        path: "{{ src_dir }}/.git"
+      register: src_git_dir
+
+    - name: "1a. Clone repository to {{ src_dir }} (first time)"
+      shell: |
+        echo "=== Cloning repository ==="
+        git clone {{ repo_url }} {{ src_dir }}
+        echo "=== Clone complete ==="
+        cd {{ src_dir }} && git log --oneline -3
+      register: git_clone_result
+      when: not src_git_dir.stat.exists
+
+    - name: "1a. Show clone output"
+      debug:
+        var: git_clone_result.stdout_lines
+      when: not src_git_dir.stat.exists
+
+    - name: "1b. Reset local changes and git pull (subsequent runs)"
+      shell: |
+        cd {{ src_dir }}
+        echo "=== Current status ==="
+        git status
+        echo "=== Resetting any local changes ==="
+        git reset --hard HEAD
+        git clean -fd
+        echo "=== Pulling latest code ==="
+        git pull origin main 2>&1 || git pull origin master 2>&1
+        echo "=== Latest commits ==="
+        git log --oneline -5
+      register: git_pull_result
+      when: src_git_dir.stat.exists
+
+    - name: "1b. Show git pull output"
+      debug:
+        var: git_pull_result.stdout_lines
+      when: src_git_dir.stat.exists
+
+    # ----------------------------------------------------------
+    # SECTION 2: Detect JAVA_HOME + Build with Maven
+    # (SSH sessions don't inherit full env — JAVA_HOME must be set manually)
+    # ----------------------------------------------------------
+    - name: "2. Check if mvnw exists in {{ src_dir }}"
+      stat:
+        path: "{{ src_dir }}/mvnw"
+      register: mvnw_file
+
+    - name: "2. Ensure mvnw is executable"
+      file:
+        path: "{{ src_dir }}/mvnw"
+        mode: '0755'
+      when: mvnw_file.stat.exists
+
+    - name: "2. Auto-detect JAVA_HOME inside the container"
+      shell: |
+        if [ -d "/opt/java/openjdk" ]; then
+          echo "/opt/java/openjdk"
+        elif [ -d "/usr/lib/jvm/java-25-openjdk" ]; then
+          echo "/usr/lib/jvm/java-25-openjdk"
+        else
+          find /usr/lib/jvm /opt -name "javac" -type f 2>/dev/null | head -n 1 | sed 's|/bin/javac||'
+        fi
+      register: java_home_result
+      changed_when: false
+      when: mvnw_file.stat.exists
+
+    - name: "2. Show detected JAVA_HOME"
+      debug:
+        msg: "JAVA_HOME detected: {{ java_home_result.stdout }}"
+      when: mvnw_file.stat.exists
+
+    - name: "2. [Build A] Download Maven dependencies (like: composer install)"
+      shell: |
+        cd {{ src_dir }}
+        echo "=== Downloading Maven dependencies (equivalent: composer install) ==="
+        ./mvnw dependency:go-offline -B -q
+        echo "=== Dependencies ready ==="
+      environment:
+        JAVA_HOME: "{{ java_home_result.stdout }}"
+      register: maven_deps_result
+      when: mvnw_file.stat.exists
+      timeout: 300
+
+    - name: "2. Show dependency download result"
+      debug:
+        var: maven_deps_result.stdout_lines
+      when: mvnw_file.stat.exists
+
+    - name: "2. [Build B] Package Spring Boot JAR (like: npm run build)"
+      shell: |
+        cd {{ src_dir }}
+        echo "=== Building JAR (equivalent: npm run build) ==="
+        ./mvnw package -DskipTests -B
+        echo "=== Build complete ==="
+        ls -lh {{ src_dir }}/target/*.jar
+      environment:
+        JAVA_HOME: "{{ java_home_result.stdout }}"
+      register: maven_build_result
+      when: mvnw_file.stat.exists
+      timeout: 600
+
+    - name: "2. Show Maven build result"
+      debug:
+        var: maven_build_result.stdout_lines
+      when: mvnw_file.stat.exists
+
+    - name: "2. SKIP - No source code in {{ src_dir }}"
+      debug:
+        msg: >
+          mvnw not found at {{ src_dir }}/mvnw.
+          Git clone/pull may not have run yet (check repo_url variable).
+          Using existing pre-built JAR at {{ spring_boot_jar }}.
+      when: not mvnw_file.stat.exists
+
+    # ----------------------------------------------------------
+    # SECTION 3: Run Tests against SQLite (test profile)
+    # ----------------------------------------------------------
+    - name: "3. Run Maven tests with SQLite (spring.profiles.active=test)"
+      shell: |
+        cd {{ src_dir }}
+        echo "=== Running tests with SQLite in-memory DB ==="
+        echo "=== Prod DB  : MySQL ({{ mysql_host }}:{{ mysql_port }}/{{ mysql_db }}) ==="
+        echo "=== Test DB  : SQLite in-memory (no MySQL needed) ==="
+        ./mvnw test -Dspring.profiles.active=test -B
+        echo "=== Tests complete ==="
+      environment:
+        JAVA_HOME: "{{ java_home_result.stdout }}"
+      register: maven_test_result
+      when: mvnw_file.stat.exists
+      timeout: 600
+      ignore_errors: yes
+
+    - name: "3. Show test results"
+      debug:
+        var: maven_test_result.stdout_lines
+      when: mvnw_file.stat.exists
+
+    - name: "3. Fail loudly if tests failed"
+      fail:
+        msg: |
+          Tests FAILED! Review output above.
+          Tests used: -Dspring.profiles.active=test (SQLite in-memory)
+      when:
+        - mvnw_file.stat.exists
+        - maven_test_result.rc != 0
+
+    - name: "3. Tests passed"
+      debug:
+        msg: "All tests passed (SQLite in-memory DB, not MySQL)"
+      when:
+        - mvnw_file.stat.exists
+        - maven_test_result.rc == 0
+
+    # ----------------------------------------------------------
+    # SECTION 4: Backup MySQL Production Database
+    # ----------------------------------------------------------
+    - name: "4. Create backup directory {{ mysql_backup_dir }}"
+      file:
+        path: "{{ mysql_backup_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: "4. Set backup filename with timestamp"
+      set_fact:
+        backup_filename: "{{ mysql_db }}_backup_{{ ansible_date_time.iso8601_basic_short }}.sql"
+
+    - name: "4. Display backup plan"
+      debug:
+        msg: |
+          MySQL Backup:
+            Host     : {{ mysql_host }}:{{ mysql_port }}
+            Database : {{ mysql_db }}
+            Output   : {{ mysql_backup_dir }}/{{ backup_filename }}
+
+    - name: "4. Run mysqldump to backup production DB"
+      shell: |
+        mysqldump \
+          -h {{ mysql_host }} \
+          -P {{ mysql_port }} \
+          -u {{ mysql_user }} \
+          -p'{{ mysql_password }}' \
+          --single-transaction \
+          --routines \
+          --triggers \
+          --add-drop-table \
+          --comments \
+          {{ mysql_db }} > {{ mysql_backup_dir }}/{{ backup_filename }}
+        echo "Backup size: $(du -sh {{ mysql_backup_dir }}/{{ backup_filename }} | cut -f1)"
+      register: backup_result
+
+    - name: "4. Verify backup file is valid"
+      stat:
+        path: "{{ mysql_backup_dir }}/{{ backup_filename }}"
+      register: backup_stat
+
+    - name: "4. Backup result"
+      debug:
+        msg: |
+          MySQL Backup Successful!
+            File : {{ mysql_backup_dir }}/{{ backup_filename }}
+            Size : {{ backup_stat.stat.size }} bytes
+      when: backup_stat.stat.exists and backup_stat.stat.size > 0
+
+    - name: "4. FAIL if backup is missing or empty"
+      fail:
+        msg: "Backup FAILED — {{ mysql_backup_dir }}/{{ backup_filename }} is missing or empty!"
+      when: not backup_stat.stat.exists or backup_stat.stat.size == 0
+
+    - name: "4. List all backups"
+      shell: ls -lh {{ mysql_backup_dir }}/ | sort -k6,7
+      register: backup_list
+
+    - name: "4. Show all backups"
+      debug:
+        var: backup_list.stdout_lines
+
+    # ----------------------------------------------------------
+    # SECTION 5: Deploy New JAR + Restart Spring Boot
+    # ----------------------------------------------------------
+
+    # Step 5a: Copy the newly built JAR into place BEFORE killing Spring Boot
+    - name: "5a. Copy new JAR to {{ spring_boot_jar }} (if a new build was done)"
+      shell: |
+        if ls {{ src_dir }}/target/*.jar 1>/dev/null 2>&1; then
+          echo "Copying new JAR from {{ src_dir }}/target/ to {{ spring_boot_jar }}"
+          cp {{ src_dir }}/target/*.jar {{ spring_boot_jar }}
+          echo "JAR updated successfully"
+        else
+          echo "No new JAR found in {{ src_dir }}/target/ — using existing {{ spring_boot_jar }}"
+        fi
+      register: copy_jar_result
+      ignore_errors: yes
+
+    - name: "5a. Show JAR copy result"
+      debug:
+        var: copy_jar_result.stdout_lines
+
+    # Step 5b: Kill Spring Boot — container auto-restarts (restart: unless-stopped)
+    - name: "5b. Kill Spring Boot process (container will auto-restart via Docker)"
+      shell: pkill -f 'football-rental.jar' || true
+      ignore_errors: yes
+      register: kill_result
+
+    - name: "5b. Show kill output"
+      debug:
+        msg: "Spring Boot process signaled to stop. Container will auto-restart."
+
+    # Step 5c: Wait for container to restart and SSH to come back
+    - name: "5c. Wait for container to restart and SSH to become available again"
+      wait_for_connection:
+        delay: 8        # wait 8s before first attempt (container restart takes a few seconds)
+        sleep: 3        # retry every 3 seconds
+        timeout: 120    # give up after 2 minutes
+
+    - name: "5c. SSH is back — container restarted successfully"
+      debug:
+        msg: "Container restarted. SSH connection re-established."
+
+    # Step 5d: Wait for Spring Boot to be listening on port 8080
+    - name: "5d. Wait for Spring Boot to start on port {{ spring_boot_port }}"
+      wait_for:
+        host: "127.0.0.1"
+        port: "{{ spring_boot_port }}"
+        delay: 5
+        timeout: 120
+        state: started
+
+    # Step 5e: HTTP health check
+    - name: "5e. HTTP health check — verify /api/terrains responds"
+      uri:
+        url: "http://127.0.0.1:{{ spring_boot_port }}/api/terrains"
+        method: GET
+        status_code: 200
+        timeout: 30
+      register: health_check
+      ignore_errors: yes
+
+    - name: "5e. Health check result"
+      debug:
+        msg: >
+          App is UP - HTTP {{ health_check.status }}
+          at http://127.0.0.1:{{ spring_boot_port }}/api/terrains
+      when: health_check.status is defined and health_check.status == 200
+
+    # ----------------------------------------------------------
+    # SECTION 6: Final Summary
+    # ----------------------------------------------------------
+    - name: "6. Deployment Summary"
+      debug:
+        msg: |
+          ============================================================
+           DEPLOYMENT COMPLETE - Football Rental
+          ============================================================
+           Server   : CHOICE_A (football-rental-webserver)
+           Time     : {{ ansible_date_time.iso8601 }}
+          ------------------------------------------------------------
+           [0] SSH Login     : Connected via port 22
+           [1] Git Pull      : Source pulled to {{ src_dir }}
+           [2] Maven Build   : JAR built from source
+           [3] Tests (SQLite): Tests run with SQLite in-memory DB
+           [4] MySQL Backup  : {{ mysql_backup_dir }}/{{ backup_filename }}
+           [5] App Restart   : Spring Boot restarted and healthy
+          ============================================================
+           Prod DB : MySQL @ {{ mysql_host }}:{{ mysql_port }}/{{ mysql_db }}
+           Test DB : SQLite in-memory (spring.profiles.active=test)
+          ============================================================

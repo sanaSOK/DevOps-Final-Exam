@@ -1,0 +1,65 @@
+services:
+  # ============================================================
+  # MySQL Database Container
+  # ============================================================
+  mysql-db:
+    image: mysql:8.4
+    container_name: football-rental-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: Hello@123
+      MYSQL_DATABASE: SANA-db
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: Hello@123
+    ports:
+      - "3307:3306"   # Changed to 3307 to avoid conflict with local MySQL on 3306
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - football-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pHello@123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # Web Server Container (Spring Boot + NGINX + SSH, JDK 25)
+  # ============================================================
+  webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: football-rental-webserver
+    restart: unless-stopped
+    environment:
+      # Override Spring datasource to point to mysql-db container (internal port 3306)
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/SANA-db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: Hello@123
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "true"
+    ports:
+      - "8080:8080"   # Spring Boot (direct access)
+      - "8081:80"     # NGINX reverse proxy → Spring Boot (host 8081 → container 80)
+      - "22:22"       # SSH access
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    networks:
+      - football-network
+
+# ============================================================
+# Named volumes
+# ============================================================
+volumes:
+  mysql_data:
+    driver: local
+
+# ============================================================
+# Network
+# ============================================================
+networks:
+  football-network:
+    driver: bridge
