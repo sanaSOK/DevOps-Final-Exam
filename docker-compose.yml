@@ -43,7 +43,32 @@ services:
     ports:
       - "8080:8080"   # Spring Boot (direct access)
       - "8081:80"     # NGINX reverse proxy → Spring Boot (host 8081 → container 80)
-      - "22:22"       # SSH access
+      - "2222:22"     # SSH access (shifted from 22 to avoid conflict with load balancer)
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    networks:
+      - football-network
+
+  # ============================================================
+  # Web Load Balancer (Identical to webserver)
+  # ============================================================
+  loadbalancer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: football-rental-loadbalancer
+    restart: unless-stopped
+    environment:
+      # Override Spring datasource to point to mysql-db container (internal port 3306)
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/SANA-db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: Hello@123
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "true"
+    ports:
+      - "8090:80"     # Web Load Balancer on IP localhost:8090 for website
+      - "22:22"       # Port 22 for SSH
     depends_on:
       mysql-db:
         condition: service_healthy
